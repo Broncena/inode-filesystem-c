@@ -1,36 +1,49 @@
 cmake_minimum_required(VERSION 3.25)
-project(FS)
-set(CMAKE_COLOR_MAKEFILE ON)
-if(APPLE)
-    # Make policy CMP0042 warning go away
-    # even though I still don't quite understand it
-    set(CMAKE_MACOSX_RPATH ON)
-endif(APPLE)
+project(InodeFilesystem LANGUAGES C CXX)
 
-# Specific paths for Hellbender
-set(CS4520_INCLUDE_DIRS "/cluster/pixstor/class/cs4520/include")
-set(CS4520_LIB_DIRS "/cluster/pixstor/class/cs4520/lib")
-include_directories(${CS4520_INCLUDE_DIRS})
-link_directories(${CS4520_LIB_DIRS})
+# The supplied course libraries are Linux x86-64 shared objects.
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+   NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64)$")
+    message(FATAL_ERROR
+        "The bundled support libraries require Linux x86-64. "
+        "Build in a matching Linux environment; see README.md.")
+endif()
 
-include_directories(include)
-include_directories(${GTEST_INCLUDE_DIRS} include)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-link_directories(${CMAKE_CURRENT_SOURCE_DIR}/lib)
+find_package(GTest REQUIRED)
+find_package(Threads REQUIRED)
 
-#add_library(bitmap SHARED src/bitmap.c)
-#add_library(block_store SHARED src/block_store.c)
-#add_library(dyn_array SHARED src/dyn_array.c)
-add_library(FSTest SHARED test/tests.cpp)
-#find_package(GTest REQUIRED)
-set(SHARED_FLAGS " -Wall -Wextra -Wshadow -Werror -g -D_POSIX_C_SOURCE=200809L -Wno-sign-compare")
-set(CMAKE_CXX_FLAGS " ${SHARED_FLAGS}")
-set(CMAKE_C_FLAGS " ${SHARED_FLAGS}")
+foreach(support IN ITEMS bitmap block_store dyn_array)
+    set(support_path "${CMAKE_CURRENT_SOURCE_DIR}/lib/lib${support}.so")
+    if(NOT EXISTS "${support_path}")
+        message(FATAL_ERROR "Missing supplied library: ${support_path}")
+    endif()
+    add_library(${support} SHARED IMPORTED)
+    set_target_properties(${support} PROPERTIES
+        IMPORTED_LOCATION "${support_path}")
+endforeach()
 
 add_library(FS SHARED src/FS.c)
-set_target_properties(FS PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_link_libraries(FS block_store dyn_array bitmap)
+target_include_directories(FS PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(FS PRIVATE block_store dyn_array bitmap)
 
-add_executable(fs_test test/tests_main.cpp)
-target_compile_definitions(fs_test PRIVATE)
-target_link_libraries(fs_test FSTest FS gtest pthread)
+add_executable(fs_test test/tests.cpp test/tests_main.cpp)
+target_link_libraries(fs_test PRIVATE FS dyn_array GTest::gtest Threads::Threads)
+
+foreach(target IN ITEMS FS fs_test)
+    target_compile_definitions(${target} PRIVATE _POSIX_C_SOURCE=200809L)
+    target_compile_options(${target} PRIVATE
+        -Wall -Wextra -Wshadow -Werror -Wno-sign-compare)
+endforeach()
+
+enable_testing()
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-images")
+# Later tests reuse images created by earlier tests, so run the suite together.
+add_test(NAME filesystem COMMAND fs_test)
+set_tests_properties(filesystem PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-images"
+    TIMEOUT 300)
